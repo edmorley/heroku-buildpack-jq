@@ -1,0 +1,63 @@
+#!/bin/bash
+
+BP_DIR=$(cd $(dirname ${0:-}); cd ..; pwd)
+BUILD_DIR=$1
+CACHE_DIR=$2
+ENV_DIR=$3
+PROFILE_DIR="$BUILD_DIR/.profile.d"
+PROFILE_PATH="$PROFILE_DIR/libjq.sh"
+BIN_DIR="$BUILD_DIR/vendor/jq/bin"
+LIB_DIR="$BUILD_DIR/vendor/jq/lib"
+INCLUDE_DIR="$BUILD_DIR/vendor/jq/include"
+
+cat <<EOF
+BP_DIR = $BP_DIR
+BUILD_DIR = $BUILD_DIR
+CACHE_DIR = $CACHE_DIR
+ENV_DIR = $ENV_DIR
+PROFILE_PATH = $PROFILE_PATH
+INSTALL_DIR = $INSTALL_DIR
+EOF
+
+indent() {
+  sed -u 's/^/       /'
+}
+
+echo "-----> Building jq with oniguruma"
+
+if [ ! -e ${CACHE_DIR}/usr/local/lib/libjq.so ]; then
+  echo "Clone jq" | indent
+  cd $BUILD_DIR
+  git clone https://github.com/stedolan/jq.git
+  cd jq
+  git checkout tags/jq-1.6
+
+  echo "Build jq with oniguruma support" | indent
+  git submodule update --init
+  autoreconf -fi
+  ./configure --with-oniguruma=builtin
+  make
+  make install DESTDIR=$CACHE_DIR
+fi
+
+mkdir -p $INCLUDE_DIR
+mkdir -p $LIB_DIR
+mkdir -p $BIN_DIR
+mkdir -p $PROFILE_DIR
+rsync -avz ${CACHE_DIR}/usr/local/lib/ ${LIB_DIR}
+rsync -avz ${CACHE_DIR}/usr/local/include/ ${INCLUDE_DIR}
+rsync -avz ${CACHE_DIR}/usr/local/bin/ ${BIN_DIR}
+
+echo
+echo "Found installed jq library files:" | indent
+find ${INSTALL_DIR}
+echo
+
+touch $PROFILE_PATH
+cat >$PROFILE_PATH <<EOF
+export PATH="${HOME}/vendor/jq/bin:$PATH"
+export LD_LIBRARY_PATH="${HOME}/vendor/jq/include:$LD_LIBRARY_PATH" 
+export LIBRARY_PATH="${HOME}/vendor/jq/lib:$LIBRARY_PATH"
+export CPATH="${HOME}/vendor/jq/bin:$CPATH"
+EOF
+
