@@ -1,9 +1,0 @@
-#!/bin/bash
-
-BUILD_DIR=$1
-
-cat <<EOF
----
-config_vars:
-PATH: $PATH:$BUILD_DIR/vendor/jq/bin
-EOF

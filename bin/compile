@@ -1,63 +1,46 @@
 #!/bin/bash
 
+set -e            # fail fast
+set -o pipefail   # don't ignore exit codes when piping output
+set -x            # enable debugging
+
 BP_DIR=$(cd $(dirname ${0:-}); cd ..; pwd)
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
 PROFILE_DIR="$BUILD_DIR/.profile.d"
-PROFILE_PATH="$PROFILE_DIR/libjq.sh"
-BIN_DIR="$BUILD_DIR/vendor/jq/bin"
-LIB_DIR="$BUILD_DIR/vendor/jq/lib"
-INCLUDE_DIR="$BUILD_DIR/vendor/jq/include"
-
-cat <<EOF
-BP_DIR = $BP_DIR
-BUILD_DIR = $BUILD_DIR
-CACHE_DIR = $CACHE_DIR
-ENV_DIR = $ENV_DIR
-PROFILE_PATH = $PROFILE_PATH
-INSTALL_DIR = $INSTALL_DIR
-EOF
+PROFILE_PATH="$PROFILE_DIR/jq.sh"
 
 indent() {
-  sed -u 's/^/       /'
+  sed -u 's/^/      /'
 }
 
-echo "-----> Building jq with oniguruma"
+echo "-----> Installing jq@1.6 with oniguruma support"
+cd $BUILD_DIR
 
-if [ ! -e ${CACHE_DIR}/usr/local/lib/libjq.so ]; then
-  echo "Clone jq" | indent
-  cd $BUILD_DIR
-  git clone https://github.com/stedolan/jq.git
-  cd jq
-  git checkout tags/jq-1.6
+# download the binary
+curl https://raw.githubusercontent.com/szgupta/heroku-buildpack-rubyjq/master/jq-1.6-with-oniguruma.tar.gz -O
 
-  echo "Build jq with oniguruma support" | indent
-  git submodule update --init
-  autoreconf -fi
-  ./configure --with-oniguruma=builtin
-  make
-  make install DESTDIR=$CACHE_DIR
-fi
+# make a directory to untar the binary
+mkdir -p vendor/jq
 
-mkdir -p $INCLUDE_DIR
-mkdir -p $LIB_DIR
-mkdir -p $BIN_DIR
+# untar the binary to the desired directory
+tar -C vendor/jq -xvf jq-1.6-with-oniguruma.tar.gz
+chmod -R 777 vendor/jq
+
+# append desired directory to PATH for dynos
 mkdir -p $PROFILE_DIR
-rsync -avz ${CACHE_DIR}/usr/local/lib/ ${LIB_DIR}
-rsync -avz ${CACHE_DIR}/usr/local/include/ ${INCLUDE_DIR}
-rsync -avz ${CACHE_DIR}/usr/local/bin/ ${BIN_DIR}
-
-echo
-echo "Found installed jq library files:" | indent
-find ${INSTALL_DIR}
-echo
-
 touch $PROFILE_PATH
 cat >$PROFILE_PATH <<EOF
-export PATH="${HOME}/vendor/jq/bin:$PATH"
-export LD_LIBRARY_PATH="${HOME}/vendor/jq/include:$LD_LIBRARY_PATH" 
-export LIBRARY_PATH="${HOME}/vendor/jq/lib:$LIBRARY_PATH"
-export CPATH="${HOME}/vendor/jq/bin:$CPATH"
+export PATH=$PATH:${HOME}/vendor/jq/bin
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}"$HOME/vendor/jq/lib"
+EOF
+
+# append desired directory to PATH for subsequent buildpacks
+cat >$BP_DIR/export <<EOF
+export PATH=\$PATH:$BUILD_DIR/vendor/jq/bin
+export LIBRARY_PATH=\${LIBRARY_PATH:+\${LIBRARY_PATH}:}$BUILD_DIR/vendor/jq/lib
+export LD_LIBRARY_PATH=\${LD_LIBRARY_PATH:+\${LD_LIBRARY_PATH}:}$BUILD_DIR/vendor/jq/lib
+export CPATH=\${CPATH:+\${CPATH}:}$BUILD_DIR/vendor/jq/include
 EOF
 
