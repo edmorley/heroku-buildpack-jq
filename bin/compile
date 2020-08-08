@@ -2,45 +2,71 @@
 
 set -e            # fail fast
 set -o pipefail   # don't ignore exit codes when piping output
-set -x            # enable debugging
 
+# formatting helper
+indent() {
+  c='s/^/       /'
+  case $(uname) in
+    Darwin) sed -l "$c";;
+    *)      sed -u "$c";;
+  esac
+}
+
+# useful variable definitions
 BP_DIR=$(cd $(dirname ${0:-}); cd ..; pwd)
 BUILD_DIR=$1
 CACHE_DIR=$2
-ENV_DIR=$3
+JQ_SOURCE_DIR="$BUILD_DIR/.heroku/vendor/jq" # where the jq source code will be
+JQ_BUILD_DIR="$BUILD_DIR/vendor/jq" # where the jq binaries will be stored (in subdirectories) during buildpack execution
+JQ_HOME_DIR="$HOME/vendor/jq" # where the jq binaries will be stored (in subdirectories) during dyno execution
+JQ_CACHE_DIR="$CACHE_DIR/vendor/jq" # where the jq binaries will be cached (in subdirectories)
 PROFILE_DIR="$BUILD_DIR/.profile.d"
 PROFILE_PATH="$PROFILE_DIR/jq.sh"
 
-indent() {
-  sed -u 's/^/      /'
+echo "-----> Installing jq@1.6 with oniguruma support"
+
+# fetch and compile jq with oniguruma support, unless its in the cache 
+if [ -d "$JQ_CACHE_DIR" ]; then
+  echo "jq already compiled - found in cache" | indent
+else
+  echo "fetching and compiling jq" | indent
+  
+  curl -OLs https://github.com/stedolan/jq/releases/download/jq-1.6/jq-1.6.tar.gz
+ 
+  mkdir -p $JQ_SOURCE_DIR
+  mkdir -p $JQ_CACHE_DIR
+
+  tar -C $JQ_SOURCE_DIR -xf jq-1.6.tar.gz
+  cd $JQ_SOURCE_DIR/jq-1.6
+  autoreconf -fi |& indent # according to README, we shouldn't need to do this step, but https://github.com/stedolan/jq/issues/1930#issuecomment-504115777
+  ./configure --silent --with-oniguruma=builtin --disable-maintainer-mode |& indent
+  make -s |& indent
+  make install DESTDIR=$JQ_CACHE_DIR |& indent
+fi
+
+# at this point, we know the binaries are in the cache.
+# So, copy binaries from cache into build directory, so that it can be run by dynos and other buildpacks
+mkdir -p $JQ_BUILD_DIR
+rsync -az $JQ_CACHE_DIR/usr/local/ $JQ_BUILD_DIR
+
+# helper to overwrite the contents of $2 with new path variables
+config_var_definitions() {
+  path=$1
+  out_file=$2
+  cat >$2 <<EOF
+export PATH=\${PATH:+\${PATH}:}$1/bin
+export LIBRARY_PATH=\${LIBRARY_PATH:+\${LIBRARY_PATH}:}$1/lib
+export LD_LIBRARY_PATH=\${LD_LIBRARY_PATH:+\${LD_LIBRARY_PATH}:}$1/lib
+export CPATH=\${CPATH:+\${CPATH}:}$1/include
+EOF
 }
 
-echo "-----> Installing jq@1.6 with oniguruma support"
-cd $BUILD_DIR
-
-# download the binary
-curl https://raw.githubusercontent.com/szgupta/heroku-buildpack-rubyjq/master/jq-1.6-with-oniguruma.tar.gz -O
-
-# make a directory to untar the binary
-mkdir -p vendor/jq
-
-# untar the binary to the desired directory
-tar -C vendor/jq -xvf jq-1.6-with-oniguruma.tar.gz
-chmod -R 777 vendor/jq
-
-# append desired directory to PATH for dynos
+# append $JQ_BUILD_DIR subdirectories to appropriate env variables for dynos 
 mkdir -p $PROFILE_DIR
-touch $PROFILE_PATH
-cat >$PROFILE_PATH <<EOF
-export PATH=$PATH:${HOME}/vendor/jq/bin
-export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}"$HOME/vendor/jq/lib"
-EOF
+config_var_definitions $JQ_HOME_DIR $PROFILE_PATH
 
-# append desired directory to PATH for subsequent buildpacks
-cat >$BP_DIR/export <<EOF
-export PATH=\$PATH:$BUILD_DIR/vendor/jq/bin
-export LIBRARY_PATH=\${LIBRARY_PATH:+\${LIBRARY_PATH}:}$BUILD_DIR/vendor/jq/lib
-export LD_LIBRARY_PATH=\${LD_LIBRARY_PATH:+\${LD_LIBRARY_PATH}:}$BUILD_DIR/vendor/jq/lib
-export CPATH=\${CPATH:+\${CPATH}:}$BUILD_DIR/vendor/jq/include
-EOF
+# append $JQ_BUILD_DIR subdirectories to appropriate env variables for subsequent buildpacks (i.e. when bundle installing) 
+config_var_definitions $JQ_BUILD_DIR $BP_DIR/export
+
+echo "Done installing jq" | indent
 
